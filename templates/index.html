@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>WiFi Manager</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f0f2f5;color:#1a1a2e;padding:16px;min-height:100vh}
+.container{max-width:600px;margin:0 auto}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;padding-bottom:12px;border-bottom:2px solid #e0e0e0}
+.header h1{font-size:22px;font-weight:700}
+.badge{font-size:11px;padding:4px 12px;border-radius:12px;font-weight:600}
+.badge.online{background:#d4edda;color:#155724}
+.badge.offline{background:#f8d7da;color:#721c24}
+
+.policy-bar{background:white;border-radius:12px;padding:14px 16px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.08);display:flex;justify-content:space-between;align-items:center}
+.policy-bar .label{font-size:13px;color:#666}
+.policy-bar .val{font-size:14px;font-weight:600;padding:4px 10px;border-radius:8px}
+.val.blacklist{background:#fff3cd;color:#856404}
+.val.blacklist-on{background:#ffc107;color:#000}
+.val.disabled{background:#d4edda;color:#155724}
+
+.device-list{display:flex;flex-direction:column;gap:10px;margin-bottom:16px}
+.card{background:white;border-radius:12px;padding:14px 16px;box-shadow:0 1px 3px rgba(0,0,0,.08);transition:opacity .2s;position:relative}
+.card.updating{opacity:.5;pointer-events:none}
+.card-top{display:flex;justify-content:space-between;align-items:center}
+.info{flex:1;min-width:0}
+.name{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.meta{font-size:11px;color:#888;margin-top:2px}
+.actions{display:flex;align-items:center;gap:6px}
+
+.toggle{position:relative;width:52px;height:28px;flex-shrink:0}
+.toggle input{display:none}
+.toggle .sl{position:absolute;inset:0;background:#28a745;border-radius:14px;cursor:pointer;transition:.2s}
+.toggle .sl::after{content:'';position:absolute;width:22px;height:22px;border-radius:50%;background:white;top:3px;left:3px;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.toggle input:checked+.sl{background:#dc3545}
+.toggle input:checked+.sl::after{transform:translateX(24px)}
+.toggle .sl.loading{opacity:.5;pointer-events:none}
+
+.btn-icon{background:none;border:none;cursor:pointer;font-size:16px;padding:4px;border-radius:6px;transition:.15s;color:#666;line-height:1}
+.btn-icon:hover{background:#f0f0f0;color:#333}
+.btn-icon.off{opacity:.3}
+
+.expand{background:white;border-top:1px solid #eee;padding:12px 16px;display:flex;flex-direction:column;gap:8px;margin:0 -16px -14px;border-radius:0 0 12px 12px}
+.row{display:flex;align-items:center;gap:8px;font-size:13px}
+.row label{color:#666;min-width:60px}
+.row input[type=text]{flex:1;padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;outline:none}
+.row input[type=text]:focus{border-color:#2563eb}
+.row input[type=time]{padding:4px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px}
+.btn-save{padding:6px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;color:white;background:#2563eb}
+.btn-save:hover{background:#1d4ed8}
+
+.refresh-btn{display:block;width:100%;padding:12px;margin-bottom:16px;background:white;border:1px solid #ddd;border-radius:12px;font-size:14px;font-weight:600;color:#555;cursor:pointer;transition:.2s}
+.refresh-btn:hover{background:#f5f5f5}
+.refresh-btn:disabled{opacity:.5}
+
+.empty-state{text-align:center;padding:40px 20px;color:#888}
+.schedule-badge{font-size:10px;padding:2px 6px;border-radius:4px;background:#e8f4f8;color:#0c5460;margin-left:6px}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#333;color:white;padding:10px 20px;border-radius:8px;font-size:13px;opacity:0;transition:.3s;z-index:999;pointer-events:none}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>WiFi Manager</h1>
+    <span class="badge offline" id="statusBadge">Offline</span>
+  </div>
+  <div class="policy-bar">
+    <span class="label">SSID1 Filter</span>
+    <span class="val" id="policyVal">-</span>
+  </div>
+  <div class="device-list" id="deviceList">
+    <div class="empty-state"><div style="font-size:32px">&#8987;</div><p>Memuat...</p></div>
+  </div>
+  <button class="refresh-btn" id="refreshBtn">Segarkan</button>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+let expandedCard = null;
+
+function toast(msg,err){
+  const t=document.getElementById('toast');
+  t.textContent=msg;
+  t.style.background=err?'#dc3545':'#333';
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),2500);
+}
+
+async function refresh(){
+  const btn=document.getElementById('refreshBtn');
+  btn.disabled=true;btn.textContent='Memuat...';
+  await load();
+  btn.disabled=false;btn.textContent='Segarkan';
+}
+
+async function load(){
+  try{
+    const r=await fetch('/api/status');
+    const d=await r.json();
+    const badge=document.getElementById('statusBadge');
+    badge.textContent=d.connected?'Online':'Offline';
+    badge.className='badge '+(d.connected?'online':'offline');
+    const pv=document.getElementById('policyVal');
+    const p=d.ssid1_policy||'-';
+    if(p==='Ban'){pv.textContent='Blacklist';pv.className='val blacklist';}
+    else if(p==='Allow'){pv.textContent='Whitelist';pv.className='val';}
+    else{pv.textContent='No Filter';pv.className='val disabled';}
+    render(d.devices);
+  }catch(e){toast('Gagal memuat data',true);}
+}
+
+function render(devices){
+  const el=document.getElementById('deviceList');
+  if(!devices||!devices.length){
+    el.innerHTML='<div class="empty-state"><p>Tidak ada perangkat</p></div>';
+    return;
+  }
+  el.innerHTML=devices.map(d=>{
+    const m=d.mac;
+    const mid='card-'+m.replace(/:/g,'');
+    const label=d.name||d.host||'Unknown';
+    const icon='📱';
+    const checked=d.blocked?'checked':'';
+    const sched=d.schedule&&d.schedule.enabled;
+    return `<div class="card${expandedCard===m?' expanded':''}" id="${mid}">
+      <div class="card-top">
+        <div class="info">
+          <div class="name">${icon} ${label}${sched?' <span class="schedule-badge">&#9200;</span>':''}</div>
+          <div class="meta">${d.mac} &middot; ${d.ip}</div>
+        </div>
+        <div class="actions">
+          <button class="btn-icon" onclick="toggleExpand('${m}')" title="Atur">&#9881;</button>
+          <label class="toggle">
+            <input type="checkbox" ${checked} onchange="tog('${m}','${label}',this)">
+            <span class="sl"></span>
+          </label>
+        </div>
+      </div>
+      ${expandedCard===m?`
+      <div class="expand" id="expand-${mid}">
+        <div class="row">
+          <label>Nama</label>
+          <input type="text" id="name-${mid}" value="${label}" placeholder="Nama perangkat">
+          <button class="btn-save" onclick="rename('${m}','${mid}')">Simpan</button>
+        </div>
+        <div class="row">
+          <label>Jadwal</label>
+          <input type="time" id="bt-${mid}" value="${d.schedule?.block_time||'18:00'}">
+          <span>s/d</span>
+          <input type="time" id="ut-${mid}" value="${d.schedule?.unblock_time||'06:00'}">
+          <button class="btn-save" onclick="saveSched('${m}','${mid}',${!!sched})">${sched?'&#10003;':'Atur'}</button>
+        </div>
+      </div>`:''}
+    </div>`;
+  }).join('');
+}
+
+function toggleExpand(mac){
+  expandedCard=expandedCard===mac?null:mac;
+  load();
+}
+
+async function tog(mac,host,el){
+  const card=document.getElementById('card-'+mac.replace(/:/g,''));
+  const sl=el.nextElementSibling;
+  card.classList.add('updating');sl.classList.add('loading');
+  const action=el.checked?'block':'unblock';
+  try{
+    const r=await fetch(`/api/toggle?mac=${mac}&host=${host}&action=${action}`);
+    const d=await r.json();
+    if(d.success){toast(d.message);}else{el.checked=!el.checked;toast(d.message,true);}
+  }catch(e){el.checked=!el.checked;toast('Gagal',true);}
+  card.classList.remove('updating');sl.classList.remove('loading');
+}
+
+async function rename(mac,mid){
+  const v=document.getElementById('name-'+mid).value.trim();
+  if(!v)return toast('Nama tidak boleh kosong',true);
+  try{
+    const r=await fetch('/api/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mac,name:v})});
+    const d=await r.json();
+    if(d.success){toast('Nama tersimpan');load();}else toast(d.message,true);
+  }catch(e){toast('Gagal simpan nama',true);}
+}
+
+async function saveSched(mac,mid,currentlyOn){
+  const bt=document.getElementById('bt-'+mid).value;
+  const ut=document.getElementById('ut-'+mid).value;
+  if(!bt||!ut)return toast('Atur waktu',true);
+  const enable=!currentlyOn;
+  try{
+    const r=await fetch('/api/schedule',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({mac,enabled:enable,block_time:bt,unblock_time:ut,days:[0,1,2,3,4,5,6]})});
+    const d=await r.json();
+    if(d.success){toast(enable?'Jadwal aktif':'Jadwal nonaktif');expandedCard=null;load();}
+    else toast(d.message,true);
+  }catch(e){toast('Gagal',true);}
+}
+
+load();
+</script>
+</body>
+</html>
